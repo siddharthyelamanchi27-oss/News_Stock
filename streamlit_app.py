@@ -1,14 +1,20 @@
 import streamlit as st
 import requests
 import yfinance as yf
-import os
 from groq import Groq
 
 # ================== CONFIG ==================
 st.set_page_config(page_title="AI Stock Analyzer", layout="wide")
 
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# ================== SECRETS / API KEYS ==================
+# Use Streamlit Secrets for Cloud; fallback for local testing
+try:
+    NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+except:
+    import os
+    NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not NEWS_API_KEY or not GROQ_API_KEY:
     st.error("Missing API keys. Set NEWS_API_KEY and GROQ_API_KEY.")
@@ -16,8 +22,8 @@ if not NEWS_API_KEY or not GROQ_API_KEY:
 
 client = Groq(api_key=GROQ_API_KEY)
 
+# ================== SETTINGS ==================
 TOP_STOCKS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "XOM"]
-
 POSITIVE_WORDS = {"growth", "gain", "strong", "beat", "bullish", "profit", "surge", "record", "improve", "positive"}
 NEGATIVE_WORDS = {"loss", "down", "weak", "miss", "bearish", "drop", "fall", "decline", "risk", "negative"}
 
@@ -31,17 +37,17 @@ def get_top_articles(stock):
         "pageSize": 10,
         "apiKey": NEWS_API_KEY
     }
-    return requests.get(url, params=params).json().get("articles", [])
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        return response.json().get("articles", [])
+    except Exception as e:
+        st.warning(f"Could not fetch news: {e}")
+        return []
 
 def analyze_sentiment(text):
     text = text.lower()
-    score = 0
-    for w in POSITIVE_WORDS:
-        if w in text:
-            score += 1
-    for w in NEGATIVE_WORDS:
-        if w in text:
-            score -= 1
+    score = sum(1 for w in POSITIVE_WORDS if w in text) - sum(1 for w in NEGATIVE_WORDS if w in text)
     return max(-1, min(1, score / 5))
 
 def analyze_articles(articles):
@@ -76,18 +82,21 @@ Explain clearly:
 - Risk level
 - Whether outlook is positive or negative
 """
-    stream = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[{"role": "user", "content": prompt}],
-        stream=True,
-        max_completion_tokens=500
-    )
-    explanation = ""
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
-            explanation += delta
-    return explanation
+    try:
+        stream = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+            max_completion_tokens=500
+        )
+        explanation = ""
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                explanation += delta
+        return explanation
+    except Exception as e:
+        return f"Error generating explanation: {e}"
 
 def chat_with_context(user_message):
     context = st.session_state.analysis_context
@@ -105,12 +114,15 @@ User question:
 
 Answer clearly and cautiously.
 """
-    return client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[{"role": "user", "content": prompt}],
-        stream=True,
-        max_completion_tokens=400
-    )
+    try:
+        return client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+            max_completion_tokens=400
+        )
+    except Exception as e:
+        return [{"choices":[{"delta":{"content":f"Error: {e}"}}]}]
 
 # ================== SESSION STATE ==================
 if "analysis_context" not in st.session_state:
@@ -129,7 +141,7 @@ if stock == "Other":
     stock = st.text_input("Enter stock ticker").upper()
 
 if st.button("Analyze") and stock:
-    # Reset chat when new stock is analyzed
+    # Reset chat if new stock
     if stock != st.session_state.current_stock:
         st.session_state.analysis_context = ""
         st.session_state.chat_history = []
@@ -143,7 +155,6 @@ if st.button("Analyze") and stock:
         explanation = generate_explanation(stock, price, sentiment, trend, volatility, score, articles)
         st.session_state.analysis_context = explanation
 
-    # Display metrics and charts
     col1, col2 = st.columns(2)
     with col1:
         st.metric("Price", f"${price:.2f}")
@@ -154,31 +165,31 @@ if st.button("Analyze") and stock:
         st.markdown(explanation)
 
 # ================== CHATBOT ==================
-if st.session_state.analysis_context:
-    st.markdown("---")
-    st.header("💬 Ask About This Stock")
+st.markdown("---")
+st.header("💬 Ask About This Stock")
 
-    # Show chat history
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+# Show chat history
+for msg in st.session_state.chat_history:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-    user_input = st.chat_input("Ask about the stock (e.g. Will it go up?)")
-    if user_input:
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+user_input = st.chat_input("Ask about the stock (e.g. Will it go up?)")
+if user_input and st.session_state.analysis_context:
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
 
-        # Assistant streaming
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            reply = ""
-            for chunk in chat_with_context(user_input):
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    reply += delta
-                    placeholder.markdown(reply)
-        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+    # Assistant streaming
+    with st.chat_message("assistant"):
+        placeholder = st.empty()
+        reply = ""
+        for chunk in chat_with_context(user_input):
+            delta = chunk["choices"][0]["delta"].get("content")
+            if delta:
+                reply += delta
+                placeholder.markdown(reply)
+
+    st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
 # ================== TOP STOCKS ==================
 st.markdown("---")
