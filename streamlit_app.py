@@ -7,7 +7,7 @@ from groq import Groq
 st.set_page_config(page_title="AI Stock Analyzer", layout="wide")
 
 # ================== SECRETS / API KEYS ==================
-# Use Streamlit Secrets for Cloud; fallback for local testing
+# Streamlit Cloud secrets
 try:
     NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
@@ -91,7 +91,11 @@ Explain clearly:
         )
         explanation = ""
         for chunk in stream:
-            delta = chunk.choices[0].delta.content
+            delta = None
+            if hasattr(chunk.choices[0].delta, "content"):
+                delta = chunk.choices[0].delta.content
+            elif isinstance(chunk.choices[0].delta, dict):
+                delta = chunk.choices[0].delta.get("content")
             if delta:
                 explanation += delta
         return explanation
@@ -141,7 +145,6 @@ if stock == "Other":
     stock = st.text_input("Enter stock ticker").upper()
 
 if st.button("Analyze") and stock:
-    # Reset chat if new stock
     if stock != st.session_state.current_stock:
         st.session_state.analysis_context = ""
         st.session_state.chat_history = []
@@ -168,23 +171,28 @@ if st.button("Analyze") and stock:
 st.markdown("---")
 st.header("💬 Ask About This Stock")
 
-# Show chat history
+# Show previous messages
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+# Chat input always visible
 user_input = st.chat_input("Ask about the stock (e.g. Will it go up?)")
 if user_input and st.session_state.analysis_context:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Assistant streaming
+    # Assistant streaming response
     with st.chat_message("assistant"):
         placeholder = st.empty()
         reply = ""
         for chunk in chat_with_context(user_input):
-            delta = chunk["choices"][0]["delta"].get("content")
+            delta = None
+            if hasattr(chunk.choices[0].delta, "content"):
+                delta = chunk.choices[0].delta.content
+            elif isinstance(chunk.choices[0].delta, dict):
+                delta = chunk.choices[0].delta.get("content")
             if delta:
                 reply += delta
                 placeholder.markdown(reply)
