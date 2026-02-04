@@ -5,7 +5,6 @@ import os
 from groq import Groq
 
 # ================== CONFIG ==================
-
 st.set_page_config(page_title="AI Stock Analyzer", layout="wide")
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
@@ -19,20 +18,10 @@ client = Groq(api_key=GROQ_API_KEY)
 
 TOP_STOCKS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "XOM"]
 
-# ================== SIMPLE SENTIMENT ==================
-
-POSITIVE_WORDS = {
-    "growth", "gain", "strong", "beat", "bullish",
-    "profit", "surge", "record", "improve", "positive"
-}
-
-NEGATIVE_WORDS = {
-    "loss", "down", "weak", "miss", "bearish",
-    "drop", "fall", "decline", "risk", "negative"
-}
+POSITIVE_WORDS = {"growth", "gain", "strong", "beat", "bullish", "profit", "surge", "record", "improve", "positive"}
+NEGATIVE_WORDS = {"loss", "down", "weak", "miss", "bearish", "drop", "fall", "decline", "risk", "negative"}
 
 # ================== FUNCTIONS ==================
-
 def get_top_articles(stock):
     url = "https://newsapi.org/v2/everything"
     params = {
@@ -56,21 +45,12 @@ def analyze_sentiment(text):
     return max(-1, min(1, score / 5))
 
 def analyze_articles(articles):
-    scores = []
-    for a in articles:
-        text = a.get("description") or a.get("content") or ""
-        if text:
-            scores.append(analyze_sentiment(text))
+    scores = [analyze_sentiment(a.get("description") or a.get("content") or "") for a in articles]
     return sum(scores) / len(scores) if scores else 0
 
 def get_stock_data(stock):
     hist = yf.Ticker(stock).history(period="1mo")
-    return (
-        hist["Close"].iloc[-1],
-        hist["Close"].pct_change().mean(),
-        hist["Close"].pct_change().std(),
-        hist
-    )
+    return hist["Close"].iloc[-1], hist["Close"].pct_change().mean(), hist["Close"].pct_change().std(), hist
 
 def investment_score(sentiment, trend, volatility):
     raw = sentiment * 0.4 + trend * 0.3 - volatility * 0.2
@@ -78,7 +58,6 @@ def investment_score(sentiment, trend, volatility):
 
 def generate_explanation(stock, price, sentiment, trend, volatility, score, articles):
     titles = [a["title"] for a in articles if a.get("title")][:5]
-
     prompt = f"""
 You are a financial analyst explaining stock data to a student.
 
@@ -97,25 +76,21 @@ Explain clearly:
 - Risk level
 - Whether outlook is positive or negative
 """
-
     stream = client.chat.completions.create(
         model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         stream=True,
         max_completion_tokens=500
     )
-
     explanation = ""
     for chunk in stream:
         delta = chunk.choices[0].delta.content
         if delta:
             explanation += delta
-
     return explanation
 
 def chat_with_context(user_message):
     context = st.session_state.analysis_context
-
     prompt = f"""
 You are a stock analysis chatbot.
 
@@ -130,7 +105,6 @@ User question:
 
 Answer clearly and cautiously.
 """
-
     return client.chat.completions.create(
         model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
@@ -139,83 +113,80 @@ Answer clearly and cautiously.
     )
 
 # ================== SESSION STATE ==================
-
 if "analysis_context" not in st.session_state:
     st.session_state.analysis_context = ""
-
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "current_stock" not in st.session_state:
+    st.session_state.current_stock = ""
 
 # ================== UI ==================
-
 st.title("📈 AI-Powered Stock News Analyzer")
 
-stock = st.text_input("Enter stock ticker (e.g. AAPL)").upper()
+# Stock selection
+stock = st.selectbox("Select a stock", TOP_STOCKS + ["Other"])
+if stock == "Other":
+    stock = st.text_input("Enter stock ticker").upper()
 
 if st.button("Analyze") and stock:
+    # Reset chat when new stock is analyzed
+    if stock != st.session_state.current_stock:
+        st.session_state.analysis_context = ""
+        st.session_state.chat_history = []
+        st.session_state.current_stock = stock
+
     with st.spinner("Analyzing..."):
         articles = get_top_articles(stock)
         sentiment = analyze_articles(articles)
         price, trend, volatility, hist = get_stock_data(stock)
         score = investment_score(sentiment, trend, volatility)
-
-        explanation = generate_explanation(
-            stock, price, sentiment, trend, volatility, score, articles
-        )
-
+        explanation = generate_explanation(stock, price, sentiment, trend, volatility, score, articles)
         st.session_state.analysis_context = explanation
-        st.session_state.chat_history = []
 
+    # Display metrics and charts
     col1, col2 = st.columns(2)
-
     with col1:
         st.metric("Price", f"${price:.2f}")
         st.metric("Score", f"{score:.1f} / 100")
         st.line_chart(hist["Close"])
-
     with col2:
         st.subheader("🧠 AI Explanation")
         st.markdown(explanation)
 
 # ================== CHATBOT ==================
-
 if st.session_state.analysis_context:
     st.markdown("---")
     st.header("💬 Ask About This Stock")
 
+    # Show chat history
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     user_input = st.chat_input("Ask about the stock (e.g. Will it go up?)")
-
     if user_input:
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
+        # Assistant streaming
         with st.chat_message("assistant"):
             placeholder = st.empty()
             reply = ""
-
             for chunk in chat_with_context(user_input):
                 delta = chunk.choices[0].delta.content
                 if delta:
                     reply += delta
                     placeholder.markdown(reply)
-
-        st.session_state.chat_history.append(
-            {"role": "assistant", "content": reply}
-        )
+        st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
 # ================== TOP STOCKS ==================
-
 st.markdown("---")
 st.header("📊 Top 10 Stocks — Last Month")
-
 cols = st.columns(2)
 for i, ticker in enumerate(TOP_STOCKS):
     hist = yf.Ticker(ticker).history(period="1mo")
     with cols[i % 2]:
         st.subheader(ticker)
         st.line_chart(hist["Close"])
+
